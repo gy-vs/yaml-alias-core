@@ -155,7 +155,10 @@ describe('errors', () => {
     const doc = parseDocument(src, { merge: true })
     expect(doc.errors).toHaveLength(0)
     expect(doc.warnings).toHaveLength(0)
-    expect(() => doc.toJS()).toThrow('Maximum call stack size exceeded')
+    // A merge key referencing the mapping it belongs to is a circular
+    // alias reference; it must surface as the library's own alias error,
+    // not as a RangeError from blowing the call stack.
+    expect(() => doc.toJS()).toThrow(ReferenceError)
     expect(() => doc.toJS({ maxAliasCount: 0 })).toThrow(ReferenceError)
     expect(String(doc)).toBe(src)
   })
@@ -466,6 +469,38 @@ y:
       expect(() => parse(src, { merge: true })).toThrow(
         'Merge sources must be maps or map aliases'
       )
+    })
+
+    test('forward-referenced merge anchor', () => {
+      const src = 'a:\n  <<: *B\nB: &B\n  x: 1'
+      expect(() => parse(src, { merge: true })).toThrowError(ReferenceError)
+      expect(() => parse(src, { merge: true })).toThrow(
+        /Unresolved alias \(the anchor must be set before the alias\): B/
+      )
+    })
+
+    test('forward-referenced merge anchor in sequence', () => {
+      const src = 'a:\n  <<: [*B]\nB: &B\n  x: 1'
+      expect(() => parse(src, { merge: true })).toThrowError(ReferenceError)
+      expect(() => parse(src, { merge: true })).toThrow(
+        /Unresolved alias \(the anchor must be set before the alias\): B/
+      )
+    })
+
+    test('self-referencing merge key', () => {
+      const blockSrc = 'a: &a\n  <<: *a\n  B: b'
+      expect(() => parse(blockSrc, { merge: true })).toThrowError(ReferenceError)
+      expect(() => parse(blockSrc, { merge: true })).toThrow(
+        /Circular alias reference in merge key/
+      )
+      // Must remain the library's own error even when maxAliasCount would
+      // otherwise allow the alias, rather than a stack-overflow RangeError.
+      expect(() =>
+        parse(blockSrc, { merge: true, maxAliasCount: 1 })
+      ).toThrowError(ReferenceError)
+      expect(() =>
+        parse(blockSrc, { merge: true, maxAliasCount: 2 })
+      ).toThrowError(ReferenceError)
     })
 
     test('missing whitespace', () => {

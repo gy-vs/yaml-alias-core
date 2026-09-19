@@ -591,6 +591,69 @@ describe('Resource exhaustion attacks', () => {
         })
       }
     })
+
+    describe('Merge key alias attacks', () => {
+      // Each mapping merges the previous one twice. Merging is idempotent,
+      // so the resolved result stays the size of the first mapping, but a
+      // naive implementation expands the aliases exponentially while
+      // resolving. Default maxAliasCount must reject this promptly and the
+      // aliases reached via merge keys must be counted.
+      function mergeBombSource(depth: number): string {
+        const lines = ['a0: &a0', '  B: b']
+        for (let i = 1; i <= depth; i++) {
+          const prev = `a${i - 1}`
+          lines.push(`a${i}: &a${i}`)
+          lines.push(`  <<: [*${prev}, *${prev}]`)
+        }
+        return lines.join('\n')
+      }
+
+      test('22-level double-merge bomb is rejected by default', () => {
+        const src = mergeBombSource(22)
+        expect(src.length).toBeLessThan(1024)
+        expect(() =>
+          YAML.parse(src, { merge: true, logLevel: 'error' })
+        ).toThrowError(ReferenceError)
+        expect(() =>
+          YAML.parse(src, { merge: true, logLevel: 'error' })
+        ).toThrow(/Excessive alias count/)
+      })
+
+      test('22-level double-merge bomb terminates quickly', () => {
+        const src = mergeBombSource(22)
+        // Before counting merge-key aliases, this ran a CPU core for
+        // ~11 s; the limit should kick in within milliseconds.
+        expect(() => YAML.parse(src, { merge: true })).toThrow()
+      })
+
+      test('shallow merge chains are still allowed', () => {
+        const res = YAML.parse(mergeBombSource(4), { merge: true })
+        expect(res).toMatchObject({ a4: { B: 'b' } })
+      })
+
+      test('merge-key aliases count towards maxAliasCount', () => {
+        const src = 'a: &a { x: 1 }\nb: { <<: *a }'
+        expect(() =>
+          YAML.parse(src, { merge: true, maxAliasCount: 2 })
+        ).not.toThrow()
+        expect(() =>
+          YAML.parse(src, { merge: true, maxAliasCount: 1 })
+        ).toThrow(/Excessive alias count/)
+        expect(() =>
+          YAML.parse(src, { merge: true, maxAliasCount: 0 })
+        ).toThrow(/Alias resolution is disabled/)
+      })
+
+      test('aliases inside merge sequences count towards maxAliasCount', () => {
+        const src = 'a: &a { x: 1 }\nb: { <<: [*a, *a] }'
+        expect(() =>
+          YAML.parse(src, { merge: true, maxAliasCount: 3 })
+        ).not.toThrow()
+        expect(() =>
+          YAML.parse(src, { merge: true, maxAliasCount: 2 })
+        ).toThrow(/Excessive alias count/)
+      })
+    })
   })
 })
 

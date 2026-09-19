@@ -7,8 +7,8 @@ import { Pair } from './Pair.ts'
 import type { Scalar } from './Scalar.ts'
 import { ToJSContext } from './toJS.ts'
 import type { Node, NodeBase, Range } from './types.ts'
-import type { YAMLMap } from './YAMLMap.ts'
-import type { YAMLSeq } from './YAMLSeq.ts'
+import { YAMLMap } from './YAMLMap.ts'
+import { YAMLSeq } from './YAMLSeq.ts'
 import type { YAMLSet } from './YAMLSet.ts'
 
 export class Alias implements NodeBase {
@@ -93,36 +93,7 @@ export class Alias implements NodeBase {
   toJS(doc: Document<DocValue, boolean>, ctx?: ToJSContext): any {
     if (!doc?.schema) throw new TypeError('A document argument is required')
     ctx ??= new ToJSContext()
-    const { anchors, maxAliasCount } = ctx
-
-    const source = this.resolve(doc, ctx)
-    if (!source) {
-      const msg = `Unresolved alias (the anchor must be set before the alias): ${this.source}`
-      throw new ReferenceError(msg)
-    }
-
-    let data = anchors.get(source)
-    if (!data) {
-      // Resolve anchors for Node.prototype.toJS()
-      source.toJS(doc, ctx)
-      data = anchors.get(source)
-    }
-    /* istanbul ignore if */
-    if (data?.res === undefined) {
-      const msg = 'This should not happen: Alias anchor was not resolved?'
-      throw new ReferenceError(msg)
-    }
-    if (maxAliasCount >= 0) {
-      data.count += 1
-      data.aliasCount ||= getAliasCount(doc, ctx, source, anchors)
-      if (data.count * data.aliasCount > maxAliasCount) {
-        const msg =
-          'Excessive alias count indicates a resource exhaustion attack'
-        throw new ReferenceError(msg)
-      }
-    }
-
-    return data.res
+    return resolveAliasToJS(this, doc, ctx)
   }
 
   toString(
@@ -143,27 +114,93 @@ export class Alias implements NodeBase {
   }
 }
 
+/**
+ * Resolve an alias to a plain JavaScript value, counting the alias
+ * towards `ctx.maxAliasCount` just like `Alias#toJS()`.
+ *
+ * This is the single accounting-aware alias resolution path; merge keys
+ * must go through it as well, otherwise aliases referenced via `<<` would
+ * not be counted at all.
+ */
+export function resolveAliasToJS(
+  alias: Alias,
+  doc: Document<DocValue, boolean>,
+  ctx: ToJSContext
+): any {
+  const { anchors, maxAliasCount } = ctx
+
+  const source = alias.resolve(doc, ctx)
+  if (!source) {
+    const msg = `Unresolved alias (the anchor must be set before the alias): ${alias.source}`
+    throw new ReferenceError(msg)
+  }
+
+  let data = anchors.get(source)
+  if (!data) {
+    // Resolve anchors for Node.prototype.toJS()
+    source.toJS(doc, ctx)
+    data = anchors.get(source)
+  }
+  /* istanbul ignore if */
+  if (data?.res === undefined) {
+    const msg = 'This should not happen: Alias anchor was not resolved?'
+    throw new ReferenceError(msg)
+  }
+  if (maxAliasCount >= 0) {
+    data.count += 1
+    data.aliasCount ||= getAliasCount(doc, ctx, source, anchors)
+    if (data.count * data.aliasCount > maxAliasCount) {
+      const msg =
+        'Excessive alias count indicates a resource exhaustion attack'
+      throw new ReferenceError(msg)
+    }
+  }
+
+  return data.res
+}
+
 function getAliasCount(
   doc: Document,
   ctx: ToJSContext,
   node: Node | Pair | null,
-  anchors: ToJSContext['anchors']
+  anchors: ToJSContext['anchors'],
+  seen: Set<Node | Pair> = new Set()
 ): number {
-  if (node instanceof Alias) {
-    const source = node.resolve(doc, ctx)
-    const anchor = anchors && source && anchors.get(source)
-    return anchor ? anchor.count * anchor.aliasCount : 0
-  } else if (node instanceof Pair) {
-    const kc = getAliasCount(doc, ctx, node.key, anchors)
-    const vc = getAliasCount(doc, ctx, node.value, anchors)
-    return Math.max(kc, vc)
-  } else if (Array.isArray(node)) {
-    let count = 0
-    for (const item of node) {
-      const c = getAliasCount(doc, ctx, item, anchors)
-      if (c > count) count = c
+  if (!node || seen.has(node)) return 0
+  seen.add(node)
+  try {
+    if (node instanceof Alias) {
+      const source = node.resolve(doc, ctx)
+      const anchor = anchors && source && anchors.get(source)
+      return anchor ? anchor.count * anchor.aliasCount : 0
+    } else if (node instanceof Pair) {
+      const kc = getAliasCount(doc, ctx, node.key, anchors, seen)
+      const vc = getAliasCount(doc, ctx, node.value, anchors, seen)
+      return Math.max(kc, vc)
+    } else if (node instanceof YAMLMap) {
+      let count = 0
+      for (const pair of node.values.values()) {
+        const c = getAliasCount(doc, ctx, pair, anchors, seen)
+        if (c > count) count = c
+      }
+      return count
+    } else if (node instanceof YAMLSeq) {
+      let count = 0
+      for (const item of node) {
+        const c = getAliasCount(doc, ctx, item, anchors, seen)
+        if (c > count) count = c
+      }
+      return count
+    } else if (Array.isArray(node)) {
+      let count = 0
+      for (const item of node) {
+        const c = getAliasCount(doc, ctx, item, anchors, seen)
+        if (c > count) count = c
+      }
+      return count
     }
-    return count
+    return 1
+  } finally {
+    seen.delete(node)
   }
-  return 1
 }
