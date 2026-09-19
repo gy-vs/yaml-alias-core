@@ -155,7 +155,12 @@ describe('errors', () => {
     const doc = parseDocument(src, { merge: true })
     expect(doc.errors).toHaveLength(0)
     expect(doc.warnings).toHaveLength(0)
-    expect(() => doc.toJS()).toThrow('Maximum call stack size exceeded')
+    // A self-referential merge can never finish expanding, so it is
+    // reported as the library's alias resource exhaustion error instead of
+    // overflowing the call stack.
+    expect(() => doc.toJS()).toThrow(
+      'Excessive alias count indicates a resource exhaustion attack'
+    )
     expect(() => doc.toJS({ maxAliasCount: 0 })).toThrow(ReferenceError)
     expect(String(doc)).toBe(src)
   })
@@ -296,6 +301,27 @@ describe('merge <<', () => {
         merge: true
       })
       expect(res).toEqual({ a: { A: 1 }, A: 1, b: 'B' })
+    })
+  })
+
+  describe('alias errors', () => {
+    test('self-referential merge alias is reported as alias exhaustion', () => {
+      const src = '&A { <<: *A, B: b }\n'
+      for (const maxAliasCount of [undefined, 1, 2, 100]) {
+        expect(() =>
+          parse(src, { maxAliasCount, merge: true })
+        ).toThrow(/Excessive alias count indicates a resource exhaustion attack/)
+      }
+      // Must be the library's alias error type, not a RangeError stack overflow
+      expect(() => parse(src, { merge: true })).toThrow(ReferenceError)
+    })
+
+    test('merge alias to a later anchor is an unresolved alias error', () => {
+      const src = 'a: { <<: *B }\nB: &B {x: 1}'
+      expect(() => parse(src, { merge: true })).toThrow(
+        /Unresolved alias \(the anchor must be set before the alias\): B/
+      )
+      expect(() => parse(src, { merge: true })).toThrow(ReferenceError)
     })
   })
 

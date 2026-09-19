@@ -7,9 +7,12 @@ import { Pair } from './Pair.ts'
 import type { Scalar } from './Scalar.ts'
 import { ToJSContext } from './toJS.ts'
 import type { Node, NodeBase, Range } from './types.ts'
-import type { YAMLMap } from './YAMLMap.ts'
+import { YAMLMap } from './YAMLMap.ts'
 import type { YAMLSeq } from './YAMLSeq.ts'
 import type { YAMLSet } from './YAMLSet.ts'
+
+export const ALIAS_EXHAUSTION_MESSAGE =
+  'Excessive alias count indicates a resource exhaustion attack'
 
 export class Alias implements NodeBase {
   source: string
@@ -116,9 +119,7 @@ export class Alias implements NodeBase {
       data.count += 1
       data.aliasCount ||= getAliasCount(doc, ctx, source, anchors)
       if (data.count * data.aliasCount > maxAliasCount) {
-        const msg =
-          'Excessive alias count indicates a resource exhaustion attack'
-        throw new ReferenceError(msg)
+        throw new ReferenceError(ALIAS_EXHAUSTION_MESSAGE)
       }
     }
 
@@ -157,6 +158,13 @@ function getAliasCount(
     const kc = getAliasCount(doc, ctx, node.key, anchors)
     const vc = getAliasCount(doc, ctx, node.value, anchors)
     return Math.max(kc, vc)
+  } else if (node instanceof YAMLMap) {
+    let count = 0
+    for (const pair of node.values.values()) {
+      const c = getAliasCount(doc, ctx, pair, anchors)
+      if (c > count) count = c
+    }
+    return count
   } else if (Array.isArray(node)) {
     let count = 0
     for (const item of node) {

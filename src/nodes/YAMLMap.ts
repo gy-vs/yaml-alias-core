@@ -246,8 +246,14 @@ export class YAMLMap<
       isPlainObject = true
     }
     if (this.anchor) ctx.setAnchor(this, map)
-    for (const pair of this.values.values())
-      addPairToJSMap(doc, ctx, map, pair, isPlainObject)
+    const resolving = (ctx.resolving ??= new Set())
+    resolving.add(this)
+    try {
+      for (const pair of this.values.values())
+        addPairToJSMap(doc, ctx, map, pair, isPlainObject)
+    } finally {
+      resolving.delete(this)
+    }
     return map
   }
 

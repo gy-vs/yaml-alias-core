@@ -590,6 +590,47 @@ describe('Resource exhaustion attacks', () => {
           ).not.toThrow()
         })
       }
+
+      describe('merge key alias bombs', () => {
+        // Mirrors the security audit sample: 22 layers, each referencing the
+        // previous one twice through a `<<` merge key. The merges are
+        // idempotent so the resolved value stays the size of the first
+        // layer, but the input is well under 700 bytes.
+        function buildSrc(layers: number): string {
+          const name = (i: number) =>
+            'x'.repeat(2) + String(i).padStart(2, '0')
+          let src = `- &${name(0)} {x: 1}\n`
+          for (let i = 1; i <= layers; i++) {
+            const prev = name(i - 1)
+            src += `- &${name(i)} {<<: [*${prev}, *${prev}]}\n`
+          }
+          return src
+        }
+
+        test('22 double-reference merge layers (~661-byte audit sample)', () => {
+          const src = buildSrc(22)
+          expect(Buffer.byteLength(src)).toBeLessThan(700)
+          // Must fail fast instead of pegging a CPU core for ~11 seconds.
+          expect(() =>
+            YAML.parse(src, { logLevel: 'error', merge: true })
+          ).toThrow(
+            /Excessive alias count indicates a resource exhaustion attack/
+          )
+        }, 5000)
+
+        test('merge aliases are counted against maxAliasCount', () => {
+          const src = buildSrc(22)
+          // Four layers is already 2^4 = 16 repeated references; a count of
+          // 15 must reject it.
+          expect(() =>
+            YAML.parse(buildSrc(4), { maxAliasCount: 15, merge: true })
+          ).toThrow(ReferenceError)
+          // Disabling the limit entirely still terminates promptly.
+          expect(() =>
+            YAML.parse(src, { maxAliasCount: -1, merge: true })
+          ).not.toThrow()
+        }, 5000)
+      })
     })
   })
 })

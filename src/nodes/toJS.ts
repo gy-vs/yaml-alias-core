@@ -10,6 +10,8 @@ export class ToJSContext {
   mapAsMap: boolean
   mapKeyWarned = false
   maxAliasCount: number
+  /** Map nodes whose `toJS()` resolution is currently on the call stack */
+  resolving?: Set<Node>
 
   constructor(opt?: ToJSOptions) {
     this.mapAsMap = opt?.mapAsMap === true
